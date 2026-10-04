@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>牛顿分形生成器</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;background:#111;color:#e8e8e8}
+  .app{display:flex;height:100vh;overflow:hidden}
+  .panel{width:330px;flex:0 0 330px;padding:16px;overflow-y:auto;background:#1a1a1e;border-right:1px solid #2a2a30}
+  .view{flex:1;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;background:#0a0a0c}
+  canvas{max-width:100%;max-height:100%;box-shadow:0 0 24px rgba(0,0,0,.7);border-radius:6px;background:#000}
+  h1{font-size:18px;margin:0 0 12px}
+  label{display:block;font-size:12px;color:#9aa;margin:10px 0 4px}
+  input[type=text],input[type=number]{width:100%;padding:7px 9px;background:#0e0e12;border:1px solid #2f2f38;border-radius:6px;color:#eee;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+  fieldset{border:1px solid #2a2a30;border-radius:6px;margin:10px 0 0;padding:8px 10px}
+  legend{font-size:12px;color:#9aa;padding:0 4px}
+  .row{display:flex;gap:8px}
+  .row>div{flex:1}
+  .row label{margin-top:0}
+  button{width:100%;padding:10px;margin-top:12px;border:0;border-radius:6px;background:#3b6ef6;color:#fff;font-size:14px;cursor:pointer}
+  button:hover{background:#4f7df7}
+  button:disabled{background:#333;color:#777;cursor:not-allowed}
+  #download,#highres,#video{background:#2a2a30;color:#ccc}
+  #download:hover,#highres:hover,#video:hover{background:#34343e}
+  .examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .examples button{width:auto;margin:0;padding:4px 8px;font-size:12px;background:#26262e;color:#bbb}
+  .examples button:hover{background:#34343e}
+  .progress{height:6px;background:#0e0e12;border-radius:3px;margin-top:10px;overflow:hidden}
+  #bar{height:100%;width:0;background:#3b6ef6;transition:width .1s}
+  #status{font-size:12px;color:#9aa;margin-top:8px;min-height:16px}
+  .hint{font-size:11px;color:#777;line-height:1.6}
+  .viewinfo{font-size:12px;color:#bcd;font-family:ui-monospace,Consolas,monospace;margin:2px 0 6px;line-height:1.5}
+  .mousehint{font-size:11px;color:#777}
+  #reset,#setstart,#setend{background:#2a2a30;color:#ccc;margin-top:8px;padding:7px;font-size:12px}
+  #reset:hover,#setstart:hover,#setend:hover{background:#34343e}
+  canvas{cursor:crosshair}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="panel">
+    <h1>牛顿分形</h1>
+
+    <label>函数 f(z)，输入表达式或点击下方预制公式</label>
+    <input id="fexpr" type="text" value="z^3 - 1">
+    <div id="status"></div>
+    <div class="examples">
+      <button data-f="z^3 - 1">z³−1</button>
+      <button data-f="z^4 - 1">z⁴−1</button>
+      <button data-f="z^5 - 1">z⁵−1</button>
+      <button data-f="z^3 - 2*z + 2">z³−2z+2</button>
+      <button data-f="sin(z)">sin(z)</button>
+      <button data-f="exp(z) - 1">eᶻ−1</button>
+      <button data-f="z^4 + z^3 - 1">z⁴+z³−1</button>
+    </div>
+
+    <label>导数 f′(z)（留空自动求导）</label>
+    <input id="dfexpr" type="text" placeholder="自动求导">
+
+    <fieldset>
+      <legend>视图（鼠标控制）</legend>
+      <div class="viewinfo" id="viewinfo"></div>
+      <div class="mousehint">滚轮缩放 · 左键点击移动中心</div>
+      <button id="reset">重置视图</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>视频缩放范围（起点 → 终点）</legend>
+      <button id="setstart">记录当前视图为起点（缩小端）</button>
+      <button id="setend">记录当前视图为终点（放大端）</button>
+      <div class="viewinfo" id="rangeinfo"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>分辨率（像素）</legend>
+      <div class="row">
+        <div><label>宽</label><input id="width" type="number" value="600" min="16" max="2000" step="1"></div>
+        <div><label>高</label><input id="height" type="number" value="600" min="16" max="2000" step="1"></div>
+      </div>
+    </fieldset>
+
+    <div class="row">
+      <div><label>最大迭代</label><input id="maxiter" type="number" value="50" min="1" max="2000" step="1"></div>
+      <div><label>容差</label><input id="tol" type="number" value="1e-6" step="any" min="0"></div>
+    </div>
+
+    <button id="render">迭代</button>
+    <button id="download">下载图片</button>
+    <button id="highres">生成高分辨率图片</button>
+    <button id="video">生成视频</button>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="mousehint" id="hrhint">高分辨率图片按当前视图生成（长边 8192 像素，约 6700 万像素）并自动下载，生成需数秒至数十秒，内存占用较高。</div>
+    <div class="mousehint">「生成视频」：先用鼠标把视图调到想要的起点，点「记录起点」；再缩放到想要的终点，点「记录终点」。跨度按指数收缩、中心按缩放比例同步聚焦到终点。<br>为保证流畅，采用「先离线渲染全部帧，再以 24fps 实时录制」两阶段：1024×1024、24fps、60 秒（共 1440 帧），渲染阶段耗时较长，输出 newton-zoom.webm；再次点击可随时中止。</div>
+
+    <p class="hint">
+      语法：+ − * / ^ ( )，变量 z，常量 pi e i，函数 sin cos tan exp log sqrt sinh cosh tanh asin acos atan abs arg re im conj。乘法可省略，如 2z、3sin(z)。<br>
+      颜色代表收敛到不同的根，黑色表示未收敛或处于边界。
+    </p>
+  </aside>
+
+  <main class="view">
+    <canvas id="canvas" width="600" height="600"></canvas>
+  </main>
+</div>
+
+<script id="workerCode" type="javascript/worker">
+'use strict';
+
+function tokenize(s){
+  var tokens=[], i=0;
+  while(i<s.length){
+    var c=s[i];
+    if(/\s/.test(c)){ i++; continue; }
+    if(/[0-9.]/.test(c)){
+      var j=i, dots=0;
+      while(j<s.length && /[0-9.]/.test(s[j])){ if(s[j]==='.') dots++; j++; }
+      if(s[j]==='e'||s[j]==='E'){
+        var k=j+1;
+        if(s[k]==='+'||s[k]==='-') k++;
+        if(/[0-9]/.test(s[k]||'')){
+          j=k;
+          while(j<s.length && /[0-9]/.test(s[j])) j++;
+        }
+      }
+      tokens.push({type:'num', value:parseFloat(s.slice(i,j))});
+      i=j; continue;
+    }
+    if(/[a-zA-Z_]/.test(c)){
+      var m=i;
+      while(m<s.length && /[a-zA-Z_0-9]/.test(s[m])) m++;
+      tokens.push({type:'id', value:s.slice(i,m)});
+      i=m; continue;
+    }
+    if('+-*/^(),'.indexOf(c)>=0){ tokens.push({type:'op', value:c}); i++; continue; }
+    throw new Error('无法识别的字符: '+c);
+  }
+  return tokens;
+}
+
+function parse(str){
+  var tokens=tokenize(str), pos=0;
+  function peek(){ return tokens[pos]; }
+  function next(){ return tokens[pos++]; }
+  function isOp(t,v){ return t && t.type==='op' && t.value===v; }
+  function expect(v){ var t=tokens[pos]; if(!t||t.value!==v) throw new Error('缺少 "'+v+'"'); pos++; }
+  function startsFactor(t){
+    if(!t) return false;
+    if(t.type==='num'||t.type==='id') return true;
+    if(t.type==='op'&&t.value==='(') return true;
+    return false;
+  }
+  function parseExpr(){ return parseAddSub(); }
+  function parseAddSub(){
+    var left=parseMulDiv();
+    while(peek() && peek().type==='op' && (peek().value==='+'||peek().value==='-')){
+      var op=next().value, right=parseMulDiv();
+      left={t:'binary',op:op,a:left,b:right};
+    }
+    return left;
+  }
+  function parseMulDiv(){
+    var left=parseUnary();
+    for(;;){
+      var t=peek();
+      if(t && t.type==='op' && (t.value==='*'||t.value==='/')){
+        var op=next().value, r=parseUnary();
+        left={t:'binary',op:op,a:left,b:r};
+      } else if(startsFactor(t)){
+        var r2=parseUnary();
+        left={t:'binary',op:'*',a:left,b:r2};
+      } else break;
+    }
+    return left;
+  }
+  function parseUnary(){
+    var t=peek();
+    if(t && t.type==='op' && (t.value==='-'||t.value==='+')){
+      next();
+      var a=parseUnary();
+      return t.value==='-'?{t:'unary',op:'-',a:a}:a;
+    }
+    return parsePower();
+  }
+  function parsePower(){
+    var base=parseAtom();
+    if(isOp(peek(),'^')){
+      next();
+      var exp=parseUnary();
+      return {t:'pow',a:base,b:exp};
+    }
+    return base;
+  }
+  function parseAtom(){
+    var t=next();
+    if(!t) throw new Error('表达式不完整');
+    if(t.type==='num') return {t:'num',v:t.value};
+    if(t.type==='id'){
+      var name=t.value;
+      if(isOp(peek(),'(')){
+        next();
+        var args=[];
+        if(!isOp(peek(),')')){
+          args.push(parseExpr());
+          while(isOp(peek(),',')){ next(); args.push(parseExpr()); }
+        }
+        expect(')');
+        return {t:'call',name:name,args:args};
+      }
+      if(name==='z') return {t:'var'};
+      return {t:'const',name:name};
+    }
+    if(t.type==='op'&&t.value==='('){
+      var e=parseExpr();
+      expect(')');
+      return e;
+    }
+    throw new Error('意外的符号: '+t.value);
+  }
+  var ast=parseExpr();
+  if(pos<tokens.length) throw new Error('表达式存在多余内容');
+  return ast;
+}
+
+function bin(op,a,b){ return {t:'binary',op:op,a:a,b:b}; }
+function fcall(name,args){ return {t:'call',name:name,args:args}; }
+function pow(a,b){ return {t:'pow',a:a,b:b}; }
+
+function diff(node){
+  switch(node.t){
+    case 'num': return {t:'num',v:0};
+    case 'var': return {t:'num',v:1};
+    case 'const': return {t:'num',v:0};
+    case 'unary': return {t:'unary',op:'-',a:diff(node.a)};
+    case 'binary':
+      var a=node.a,b=node.b,da=diff(a),db=diff(b);
+      if(node.op==='+') return bin('+',da,db);
+      if(node.op==='-') return bin('-',da,db);
+      if(node.op==='*') return bin('+',bin('*',a,db),bin('*',da,b));
+      if(node.op==='/') return bin('/',bin('-',bin('*',da,b),bin('*',a,db)),pow(b,{t:'num',v:2}));
+      throw new Error('未知运算符 '+node.op);
+    case 'pow':
+      var pa=node.a,pb=node.b;
+      if(pb.t==='num'){
+        return bin('*',bin('*',{t:'num',v:pb.v},pow(pa,{t:'num',v:pb.v-1})),diff(pa));
+      }
+      var dpa=diff(pa),dpb=diff(pb);
+      var t1=bin('*',dpb,fcall('log',[pa]));
+      var t2=bin('*',pb,bin('/',dpa,pa));
+      return bin('*',node,bin('+',t1,t2));
+    case 'call':
+      var u=node.args[0], du=diff(u);
+      switch(node.name){
+        case 'sin': return bin('*',fcall('cos',[u]),du);
+        case 'cos': return bin('*',{t:'unary',op:'-',a:fcall('sin',[u])},du);
+        case 'tan': return bin('/',du,pow(fcall('cos',[u]),{t:'num',v:2}));
+        case 'exp': return bin('*',fcall('exp',[u]),du);
+        case 'log': case 'ln': return bin('/',du,u);
+        case 'sqrt': return bin('/',du,bin('*',{t:'num',v:2},fcall('sqrt',[u])));
+        case 'sinh': return bin('*',fcall('cosh',[u]),du);
+        case 'cosh': return bin('*',fcall('sinh',[u]),du);
+        case 'tanh': return bin('/',du,pow(fcall('cosh',[u]),{t:'num',v:2}));
+        case 'asin': return bin('/',du,fcall('sqrt',[bin('-',{t:'num',v:1},pow(u,{t:'num',v:2}))]));
+        case 'acos': return bin('/',{t:'unary',op:'-',a:du},fcall('sqrt',[bin('-',{t:'num',v:1},pow(u,{t:'num',v:2}))]));
+        case 'atan': return bin('/',du,bin('+',{t:'num',v:1},pow(u,{t:'num',v:2})));
+        default: throw new Error('函数 '+node.name+' 不是解析函数，无法用于牛顿迭代');
+      }
+  }
+  throw new Error('无法求导');
+}
+
+function CodeGen(){ this.lines=[]; this.n=0; }
+CodeGen.prototype.tmp=function(p){ return (p||'t')+(this.n++); };
+CodeGen.prototype.add=function(s){ this.lines.push(s); };
+
+function cAdd(g,A,B){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=('+A.re+')+('+B.re+');'); g.add('const '+im+'=('+A.im+')+('+B.im+');'); return {re:re,im:im}; }
+function cSub(g,A,B){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=('+A.re+')-('+B.re+');'); g.add('const '+im+'=('+A.im+')-('+B.im+');'); return {re:re,im:im}; }
+function cMul(g,A,B){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=('+A.re+')*('+B.re+')-('+A.im+')*('+B.im+');'); g.add('const '+im+'=('+A.re+')*('+B.im+')+('+A.im+')*('+B.re+');'); return {re:re,im:im}; }
+function cDiv(g,A,B){ var re=g.tmp('re'),im=g.tmp('im'),d=g.tmp('d'); g.add('const '+d+'=('+B.re+')*('+B.re+')+('+B.im+')*('+B.im+');'); g.add('const '+re+'=(('+A.re+')*('+B.re+')+('+A.im+')*('+B.im+'))/('+d+');'); g.add('const '+im+'=(('+A.im+')*('+B.re+')-('+A.re+')*('+B.im+'))/('+d+');'); return {re:re,im:im}; }
+function cNeg(g,A){ return {re:'-('+A.re+')', im:'-('+A.im+')'}; }
+function cExp(g,A){ var er=g.tmp('er'),re=g.tmp('re'),im=g.tmp('im'); g.add('const '+er+'=Math.exp('+A.re+');'); g.add('const '+re+'='+er+'*Math.cos('+A.im+');'); g.add('const '+im+'='+er+'*Math.sin('+A.im+');'); return {re:re,im:im}; }
+function cLog(g,A){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=Math.log(Math.hypot('+A.re+','+A.im+'));'); g.add('const '+im+'=Math.atan2('+A.im+','+A.re+');'); return {re:re,im:im}; }
+function cSqrt(g,A){ var r=g.tmp('r'),th=g.tmp('th'),re=g.tmp('re'),im=g.tmp('im'); g.add('const '+r+'=Math.sqrt(Math.hypot('+A.re+','+A.im+'));'); g.add('const '+th+'=0.5*Math.atan2('+A.im+','+A.re+');'); g.add('const '+re+'='+r+'*Math.cos('+th+');'); g.add('const '+im+'='+r+'*Math.sin('+th+');'); return {re:re,im:im}; }
+function cSin(g,A){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=Math.sin('+A.re+')*Math.cosh('+A.im+');'); g.add('const '+im+'=Math.cos('+A.re+')*Math.sinh('+A.im+');'); return {re:re,im:im}; }
+function cCos(g,A){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=Math.cos('+A.re+')*Math.cosh('+A.im+');'); g.add('const '+im+'=-(Math.sin('+A.re+')*Math.sinh('+A.im+'));'); return {re:re,im:im}; }
+function cSinh(g,A){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=Math.sinh('+A.re+')*Math.cos('+A.im+');'); g.add('const '+im+'=Math.cosh('+A.re+')*Math.sin('+A.im+');'); return {re:re,im:im}; }
+function cCosh(g,A){ var re=g.tmp('re'),im=g.tmp('im'); g.add('const '+re+'=Math.cosh('+A.re+')*Math.cos('+A.im+');'); g.add('const '+im+'=Math.sinh('+A.re+')*Math.sin('+A.im+');'); return {re:re,im:im}; }
+
+function cPowNum(g,A,n){
+  if(n===0) return {re:'1',im:'0'};
+  if(Number.isInteger(n)){
+    var neg=n<0, m=Math.abs(n), result={re:'1',im:'0'}, base=A, e=m;
+    while(e>0){
+      if(e&1) result=cMul(g,result,base);
+      e=Math.floor(e/2);
+      if(e>0) base=cMul(g,base,base);
+    }
+    if(neg) result=cDiv(g,{re:'1',im:'0'},result);
+    return result;
+  }
+  return cExp(g,cMul(g,{re:String(n),im:'0'},cLog(g,A)));
+}
+function cPow(g,A,B){ return cExp(g,cMul(g,B,cLog(g,A))); }
+
+function emitConst(name){
+  switch(name){
+    case 'pi': case 'PI': return {re:'Math.PI',im:'0'};
+    case 'e': case 'E': return {re:'Math.E',im:'0'};
+    case 'i': case 'I': return {re:'0',im:'1'};
+    default: throw new Error('未知常量: '+name);
+  }
+}
+function emitCall(g,node){
+  var name=node.name;
+  if(!node.args.length) throw new Error('函数 '+name+' 缺少参数');
+  var A=emit(g,node.args[0]);
+  switch(name){
+    case 'exp': return cExp(g,A);
+    case 'log': case 'ln': return cLog(g,A);
+    case 'sqrt': return cSqrt(g,A);
+    case 'sin': return cSin(g,A);
+    case 'cos': return cCos(g,A);
+    case 'tan': return cDiv(g,cSin(g,A),cCos(g,A));
+    case 'sinh': return cSinh(g,A);
+    case 'cosh': return cCosh(g,A);
+    case 'tanh': return cDiv(g,cSinh(g,A),cCosh(g,A));
+    case 'abs': { var re=g.tmp('re'); g.add('const '+re+'=Math.hypot('+A.re+','+A.im+');'); return {re:re,im:'0'}; }
+    case 'arg': { var r2=g.tmp('re'); g.add('const '+r2+'=Math.atan2('+A.im+','+A.re+');'); return {re:r2,im:'0'}; }
+    case 're': return {re:A.re,im:'0'};
+    case 'im': return {re:A.im,im:'0'};
+    case 'conj': return {re:A.re,im:'-('+A.im+')'};
+    case 'asin': {
+      var one={re:'1',im:'0'};
+      var sq=cSqrt(g,cSub(g,one,cMul(g,A,A)));
+      var sum=cAdd(g,cMul(g,{re:'0',im:'1'},A),sq);
+      return cMul(g,{re:'0',im:'-1'},cLog(g,sum));
+    }
+    case 'acos': {
+      var asinVal=emitCall(g,{t:'call',name:'asin',args:node.args});
+      return cSub(g,{re:'(Math.PI/2)',im:'0'},asinVal);
+    }
+    case 'atan': {
+      var one2={re:'1',im:'0'};
+      var iz=cMul(g,{re:'0',im:'1'},A);
+      var d=cSub(g,cLog(g,cSub(g,one2,iz)),cLog(g,cAdd(g,one2,iz)));
+      return cMul(g,{re:'0',im:'0.5'},d);
+    }
+    default: throw new Error('不支持的函数: '+name);
+  }
+}
+function emit(g,node){
+  switch(node.t){
+    case 'num': { var v=g.tmp('n'); g.add('const '+v+'='+node.v+';'); return {re:v,im:'0'}; }
+    case 'var': return {re:'zre',im:'zim'};
+    case 'const': return emitConst(node.name);
+    case 'unary': return cNeg(g,emit(g,node.a));
+    case 'binary': {
+      var A=emit(g,node.a), B=emit(g,node.b);
+      if(node.op==='+') return cAdd(g,A,B);
+      if(node.op==='-') return cSub(g,A,B);
+      if(node.op==='*') return cMul(g,A,B);
+      if(node.op==='/') return cDiv(g,A,B);
+      throw new Error('未知运算符 '+node.op);
+    }
+    case 'pow': {
+      var PA=emit(g,node.a);
+      if(node.b.t==='num') return cPowNum(g,PA,node.b.v);
+      return cPow(g,PA,emit(g,node.b));
+    }
+    case 'call': return emitCall(g,node);
+  }
+  throw new Error('未知的表达式节点');
+}
+
+function buildPixel(fAst,dfAst){
+  var g=new CodeGen();
+  var rf=emit(g,fAst);
+  g.add('fre='+rf.re+'; fim='+rf.im+';');
+  g.add('if(fre*fre+fim*fim < tol*tol){ out[0]=zre; out[1]=zim; return it; }');
+  var rd=emit(g,dfAst);
+  g.add('dfre='+rd.re+'; dfim='+rd.im+';');
+  var src='';
+  src+='function pixel(zre,zim,maxIter,tol,out){\n';
+  src+='  var it,fre,fim,dfre,dfim;\n';
+  src+='  for(it=0;it<maxIter;it++){\n';
+  src+='    '+g.lines.join('\n    ')+'\n';
+  src+='    var den=dfre*dfre+dfim*dfim;\n';
+  src+='    if(!(den>0)||!isFinite(den)){ out[0]=zre; out[1]=zim; return -1; }\n';
+  src+='    var dzre=(fre*dfre+fim*dfim)/den;\n';
+  src+='    var dzim=(fim*dfre-fre*dfim)/den;\n';
+  src+='    zre-=dzre; zim-=dzim;\n';
+  src+='    if(!isFinite(zre)||!isFinite(zim)){ out[0]=zre; out[1]=zim; return -1; }\n';
+  src+='  }\n';
+  src+='  out[0]=zre; out[1]=zim;\n';
+  src+='  return -1;\n';
+  src+='}\n';
+  return (new Function(src+'\nreturn pixel;'))();
+}
+
+function hsl2rgb(h,s,l){
+  var r,g,b;
+  if(s===0){ r=g=b=l; }
+  else{
+    var q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+    var h2r=function(p,q,t){ if(t<0)t+=1; if(t>1)t-=1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p; };
+    r=h2r(p,q,h+1/3); g=h2r(p,q,h); b=h2r(p,q,h-1/3);
+  }
+  return [Math.round(r*255),Math.round(g*255),Math.round(b*255)];
+}
+
+var cachedKey=null, pixel=null;
+
+function hash2(a,b){
+  var x=(a*374761393 + b*668265263)>>>0;
+  x=(x^(x>>>13))>>>0;
+  x=(x*1274126177)>>>0;
+  x=(x^(x>>>16))>>>0;
+  return x/4294967296;
+}
+
+function rootColor(re,im,eps){
+  var qre=Math.round(re/eps), qim=Math.round(im/eps);
+  var hue=(((Math.atan2(im,re)*180/Math.PI)+360)%360);
+  var j=hash2(qre,qim);
+  var s=0.60+0.25*((j*7)%1);
+  var l=0.45+0.18*((j*13)%1);
+  return hsl2rgb(hue/360,s,l);
+}
+
+function getPixel(fExpr,dfExpr){
+  var key=fExpr+'\u0001'+(dfExpr||'');
+  if(key!==cachedKey){
+    var fAst=parse(fExpr);
+    var dfAst=(dfExpr&&dfExpr.trim())?parse(dfExpr):diff(fAst);
+    pixel=buildPixel(fAst,dfAst);
+    cachedKey=key;
+  }
+  return pixel;
+}
+
+self.onmessage=function(ev){
+  var m=ev.data;
+  if(!m||m.type!=='render') return;
+  var id=m.jobId;
+  try{
+    var pix=getPixel(m.fExpr,m.dfExpr);
+    var width=m.width|0, height=m.height|0;
+    var rowStart=m.rowStart|0, rowEnd=m.rowEnd|0, rows=rowEnd-rowStart;
+    var xspan=m.xmax-m.xmin, yspan=m.ymax-m.ymin;
+    var eps=Math.max(1e-6,1e-3*Math.max(xspan,yspan));
+    var data=new Uint8ClampedArray(rows*width*4);
+    var out=[0,0];
+    for(var r=0;r<rows;r++){
+      var py=rowStart+r;
+      var y=m.ymax - yspan*(height<=1?0:py/(height-1));
+      var rowBase=r*width*4;
+      for(var px=0;px<width;px++){
+        var x=m.xmin + xspan*(width<=1?0:px/(width-1));
+        var it=pix(x,y,m.maxIter,m.tol,out);
+        var cr=0,cg=0,cb=0;
+        if(it>=0 && isFinite(out[0]) && isFinite(out[1])){
+          var col=rootColor(out[0],out[1],eps);
+          cr=col[0]; cg=col[1]; cb=col[2];
+        }
+        var idx=rowBase+px*4;
+        data[idx]=cr; data[idx+1]=cg; data[idx+2]=cb; data[idx+3]=255;
+      }
+      if((r&15)===0) self.postMessage({type:'bp',jobId:id,band:m.band,value:(r+1)/rows});
+    }
+    self.postMessage({type:'tile',jobId:id,band:m.band,rowStart:rowStart,rowEnd:rowEnd,width:width,buffer:data.buffer},[data.buffer]);
+  }catch(err){
+    self.postMessage({type:'error',jobId:id,message:String((err&&err.message)||err)});
+  }
+};
+</script>
+
+<script>
+(function(){
+  var els={
+    fexpr:document.getElementById('fexpr'),
+    dfexpr:document.getElementById('dfexpr'),
+    width:document.getElementById('width'), height:document.getElementById('height'),
+    maxiter:document.getElementById('maxiter'), tol:document.getElementById('tol'),
+    render:document.getElementById('render'),
+    download:document.getElementById('download'),
+    highres:document.getElementById('highres'),
+    video:document.getElementById('video'),
+    reset:document.getElementById('reset'),
+    setstart:document.getElementById('setstart'),
+    setend:document.getElementById('setend'),
+    rangeinfo:document.getElementById('rangeinfo'),
+    status:document.getElementById('status'),
+    bar:document.getElementById('bar'),
+    viewinfo:document.getElementById('viewinfo'),
+    canvas:document.getElementById('canvas')
+  };
+
+  var busy=false, wheelTimer=null, currentJob=null, jobSeq=0;
+  var view={ cx:0, cy:0, span:4 };
+  var HIGHRES_LONG_SIDE=8192;
+  var POOL_SIZE=Math.max(1,Math.min(navigator.hardwareConcurrency||4,16));
+  var pool=[], blobUrl=null;
+  var VIDEO_SIZE=1024, VIDEO_FPS=24, VIDEO_DURATION=60, VIDEO_MIN_SPAN=1e-12;
+  var videoPool=[], videoFrame=null, recording=false, rec=null;
+  var videoStart={ cx:0, cy:0, span:4 }, videoEnd={ cx:0, cy:0, span:1e-12 };
+
+  function num(id,fallback){ var v=parseFloat(els[id].value); return isFinite(v)?v:fallback; }
+  function res(){
+    return {
+      w:Math.max(16,Math.min(2000,Math.round(num('width',600)))),
+      h:Math.max(16,Math.min(2000,Math.round(num('height',600))))
+    };
+  }
+  function ranges(){
+    var r=res(), xs=view.span, ys=view.span*(r.h/r.w);
+    return { xmin:view.cx-xs/2, xmax:view.cx+xs/2, ymin:view.cy-ys/2, ymax:view.cy+ys/2, xs:xs, ys:ys };
+  }
+
+  function fmt(v){
+    if(Math.abs(v)<1e-12) v=0;
+    var a=Math.abs(v);
+    if(a!==0 && (a<1e-4 || a>=1e5)) return v.toExponential(2);
+    return (Math.round(v*1e6)/1e6).toString();
+  }
+  function updateViewInfo(){
+    els.viewinfo.textContent='中心 '+fmt(view.cx)+' '+fmt(view.cy)+' i　·　跨度 '+fmt(view.span);
+  }
+  function fmtView(v){ return '中心 '+fmt(v.cx)+' '+fmt(v.cy)+' i　·　跨度 '+fmt(v.span); }
+  function updateRangeInfo(){
+    els.rangeinfo.innerHTML='起点 '+fmtView(videoStart)+'<br>终点 '+fmtView(videoEnd);
+  }
+
+  function setStatus(t){ els.status.textContent=t; }
+  function setBar(v){ els.bar.style.width=Math.max(0,Math.min(1,v))*100+'%'; }
+
+  function getBlobUrl(){
+    if(!blobUrl){
+      var code=document.getElementById('workerCode').textContent;
+      blobUrl=URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
+    }
+    return blobUrl;
+  }
+  function killPool(){ for(var i=0;i<pool.length;i++) pool[i].terminate(); pool=[]; }
+  function ensurePool(n){
+    if(pool.length===n) return;
+    killPool();
+    for(var i=0;i<n;i++){
+      var w=new Worker(getBlobUrl());
+      w.onmessage=onMessage;
+      w.onerror=workerError;
+      pool.push(w);
+    }
+  }
+  function workerError(ev){ setStatus('工作线程错误: '+((ev&&ev.message)||'')); failJob(); }
+
+  function makeBands(height,n){
+    var bands=[], base=Math.floor(height/n), rem=height%n, start=0;
+    for(var i=0;i<n;i++){
+      var len=base+(i<rem?1:0);
+      if(len>0){ bands.push({ rowStart:start, rowEnd:start+len }); start+=len; }
+    }
+    return bands;
+  }
+
+  function onMessage(e){
+    var d=e.data;
+    if(!currentJob || d.jobId!==currentJob.id) return;
+    if(d.type==='bp'){
+      currentJob.progress[d.band]=d.value;
+      var sum=0, arr=currentJob.progress;
+      for(var i=0;i<arr.length;i++) sum+=arr[i];
+      var v=sum/arr.length;
+      setBar(v);
+      setStatus((currentJob.download?'生成高清图片… ':'计算中… ')+Math.round(v*100)+'%');
+    }
+    else if(d.type==='tile'){
+      var rows=d.rowEnd-d.rowStart;
+      var ctx=els.canvas.getContext('2d');
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(d.buffer), d.width, rows), 0, d.rowStart);
+      currentJob.remaining--;
+      if(currentJob.remaining===0) finishJob();
+    }
+    else if(d.type==='error'){ setStatus('错误：'+d.message); setBar(0); failJob(); }
+  }
+
+  function startJob(p){
+    var h=p.height|0;
+    var nbands=Math.min(POOL_SIZE, Math.max(1,h));
+    ensurePool(nbands);
+    var bands=makeBands(h,nbands);
+    busy=true; setBar(0);
+    setStatus((p.download?'生成高清图片… ':'计算中… ')+'0%');
+    currentJob={ id:++jobSeq, params:p, progress:[], remaining:bands.length, download:p.download, name:p.name };
+    var canvas=els.canvas;
+    canvas.width=p.width; canvas.height=h;
+    var ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,p.width,h);
+    for(var i=0;i<bands.length;i++){
+      currentJob.progress[i]=0;
+      pool[i].postMessage({
+        type:'render', jobId:currentJob.id, band:i,
+        fExpr:p.fExpr, dfExpr:p.dfExpr,
+        xmin:p.xmin, xmax:p.xmax, ymin:p.ymin, ymax:p.ymax,
+        width:p.width, height:h, rowStart:bands[i].rowStart, rowEnd:bands[i].rowEnd,
+        maxIter:p.maxIter, tol:p.tol
+      });
+    }
+  }
+
+  function finishJob(){
+    var j=currentJob; currentJob=null;
+    setBar(1);
+    if(j.download){
+      downloadCanvas(j.name||'newton-fractal.png');
+      setStatus('已生成并下载高分辨率图片：'+j.params.width+'×'+j.params.height+'（'+pool.length+' 线程）');
+    } else {
+      setStatus('完成：'+j.params.width+'×'+j.params.height+'（'+pool.length+' 线程）');
+    }
+    busy=false;
+  }
+
+  function failJob(){ currentJob=null; busy=false; killPool(); }
+
+  function requestRender(opts){
+    if(recording) return;
+    opts=opts||{};
+    var f=els.fexpr.value.trim();
+    if(!f){ setStatus('请先输入函数 f(z)'); return; }
+    var r=ranges(), z=res();
+    var p={
+      type:'render', fExpr:f, dfExpr:els.dfexpr.value,
+      xmin:r.xmin, xmax:r.xmax, ymin:r.ymin, ymax:r.ymax,
+      width:opts.w||z.w, height:opts.h||z.h,
+      maxIter:Math.max(1,Math.round(num('maxiter',50))),
+      tol:Math.max(1e-15,num('tol',1e-6)),
+      download:!!opts.download,
+      name:opts.name||null
+    };
+    updateViewInfo();
+    if(busy){ killPool(); currentJob=null; busy=false; }
+    startJob(p);
+  }
+
+  function downloadCanvas(name){
+    var a=document.createElement('a');
+    a.download=name;
+    a.href=els.canvas.toDataURL('image/png');
+    a.click();
+  }
+
+  function pickMime(){
+    var list=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    for(var i=0;i<list.length;i++){
+      if(typeof MediaRecorder!=='undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(list[i])) return list[i];
+    }
+    return '';
+  }
+  function videoSupported(){
+    return typeof MediaRecorder!=='undefined' && !!els.canvas.captureStream;
+  }
+  function setVideoControlsDisabled(b){
+    els.render.disabled=b; els.highres.disabled=b; els.download.disabled=b; els.reset.disabled=b;
+  }
+  function killVideoPool(){ for(var i=0;i<videoPool.length;i++) videoPool[i].terminate(); videoPool=[]; }
+  function createVideoPool(n){
+    killVideoPool();
+    for(var i=0;i<n;i++){
+      var w=new Worker(getBlobUrl());
+      w.onmessage=videoMessage;
+      w.onerror=(function(){ return function(ev){ if(videoFrame){ var f=videoFrame; videoFrame=null; f.reject(new Error((ev&&ev.message)||'worker error')); } }; })();
+      videoPool.push(w);
+    }
+  }
+  function videoMessage(e){
+    var d=e.data;
+    if(!videoFrame || d.jobId!==videoFrame.id) return;
+    if(d.type==='tile'){
+      videoFrame.ctx.putImageData(new ImageData(new Uint8ClampedArray(d.buffer), d.width, d.rowEnd-d.rowStart), 0, d.rowStart);
+      if(--videoFrame.remaining===0){ var f=videoFrame; videoFrame=null; f.resolve(); }
+    } else if(d.type==='error'){
+      var f2=videoFrame; videoFrame=null; f2.reject(new Error(d.message));
+    }
+  }
+  function renderFrame(params, ctx){
+    return new Promise(function(resolve,reject){
+      var bands=makeBands(params.height, videoPool.length);
+      videoFrame={ id:++jobSeq, remaining:bands.length, ctx:ctx, resolve:resolve, reject:reject };
+      for(var i=0;i<bands.length;i++){
+        videoPool[i].postMessage({
+          type:'render', jobId:videoFrame.id, band:i,
+          fExpr:params.fExpr, dfExpr:params.dfExpr,
+          xmin:params.xmin, xmax:params.xmax, ymin:params.ymin, ymax:params.ymax,
+          width:params.width, height:params.height, rowStart:bands[i].rowStart, rowEnd:bands[i].rowEnd,
+          maxIter:params.maxIter, tol:params.tol
+        });
+      }
+    });
+  }
+  function cleanupVideo(){
+    videoFrame=null;
+    killVideoPool();
+    els.video.textContent='生成视频';
+    setVideoControlsDisabled(false);
+  }
+  function stopVideo(){
+    recording=false;
+    if(rec && rec.state!=='inactive'){ rec.stop(); return; }
+    cleanupVideo();
+  }
+  function startVideo(){
+    if(recording){ stopVideo(); return; }
+    if(!videoSupported()){ setStatus('当前浏览器不支持视频录制（MediaRecorder / captureStream）'); return; }
+    var f=els.fexpr.value.trim();
+    if(!f){ setStatus('请先输入函数 f(z)'); return; }
+    if(busy){ killPool(); currentJob=null; busy=false; }
+
+    var W=VIDEO_SIZE, H=VIDEO_SIZE;
+    var s=videoStart, e=videoEnd;
+    var startSpan=s.span, endSpan=Math.max(VIDEO_MIN_SPAN, e.span);
+    var maxIter=Math.max(1,Math.round(num('maxiter',50)));
+    var tol=Math.max(1e-15,num('tol',1e-6));
+    var totalFrames=Math.max(2,Math.round(VIDEO_DURATION*VIDEO_FPS));
+
+    recording=true; rec=null;
+    els.video.textContent='停止录制';
+    setVideoControlsDisabled(true);
+    setBar(0);
+    setStatus('开始离线渲染 '+totalFrames+' 帧…');
+
+    var out=document.createElement('canvas'); out.width=W; out.height=H;
+    var octx=out.getContext('2d');
+    createVideoPool(POOL_SIZE);
+
+    function paramsAt(frac){
+      var span=startSpan*Math.pow(endSpan/startSpan, frac);
+      var ys=span*(H/W);
+      var g=(startSpan===endSpan)?(1-frac):(span-endSpan)/(startSpan-endSpan);
+      var cx=e.cx+(s.cx-e.cx)*g;
+      var cy=e.cy+(s.cy-e.cy)*g;
+      return {
+        fExpr:f, dfExpr:els.dfexpr.value,
+        xmin:cx-span/2, xmax:cx+span/2, ymin:cy-ys/2, ymax:cy+ys/2,
+        width:W, height:H, maxIter:maxIter, tol:tol
+      };
+    }
+
+    var frames=new Array(totalFrames), idx=0;
+    function renderNext(){
+      if(!recording) return;
+      if(idx>=totalFrames){ startPlayback(); return; }
+      var frac=idx/(totalFrames-1);
+      renderFrame(paramsAt(frac), octx).then(function(){
+        return new Promise(function(res,rej){
+          out.toBlob(function(b){ b?res(b):rej(new Error('帧编码失败')); }, 'image/jpeg', 0.92);
+        });
+      }).then(function(blob){
+        if(!recording) return;
+        frames[idx]=blob; idx++;
+        setBar(idx/totalFrames);
+        setStatus('离线渲染帧 '+idx+'/'+totalFrames+'（渲染完成后自动以 '+VIDEO_FPS+'fps 录制 '+VIDEO_DURATION+' 秒）');
+        setTimeout(renderNext,0);
+      }).catch(function(err){ setStatus('渲染出错：'+err.message); stopVideo(); });
+    }
+    renderNext();
+
+    function startPlayback(){
+      if(!recording) return;
+      els.canvas.width=W; els.canvas.height=H;
+      var cctx=els.canvas.getContext('2d');
+      cctx.fillStyle='#000'; cctx.fillRect(0,0,W,H);
+
+      var bitmaps=new Array(totalFrames), drawn=-1, decodeIdx=-1, LOOK=8;
+      function decodeAhead(){
+        while(decodeIdx+1<totalFrames && (decodeIdx-drawn)<LOOK){
+          decodeIdx++;
+          (function(k){
+            createImageBitmap(frames[k]).then(function(b){
+              if(k<=drawn){ b.close(); } else { bitmaps[k]=b; }
+            });
+          })(decodeIdx);
+        }
+      }
+
+      createImageBitmap(frames[0]).then(function(b0){
+        if(!recording){ b0.close(); return; }
+        bitmaps[0]=b0; cctx.drawImage(b0,0,0); drawn=0;
+
+        var stream=els.canvas.captureStream(VIDEO_FPS);
+        var opts={ videoBitsPerSecond:12000000 };
+        var mime=pickMime();
+        if(mime) opts.mimeType=mime;
+        try{ rec=new MediaRecorder(stream, opts); }
+        catch(err1){
+          try{ rec=new MediaRecorder(stream); }
+          catch(err2){ setStatus('无法创建录制器：'+(err2.message||err1.message)); stopVideo(); return; }
+        }
+        var chunks=[];
+        rec.ondataavailable=function(ev){ if(ev.data && ev.data.size) chunks.push(ev.data); };
+        rec.onstop=function(){
+          var blob=new Blob(chunks,{type:'video/webm'});
+          var url=URL.createObjectURL(blob);
+          var a=document.createElement('a'); a.download='newton-zoom.webm'; a.href=url; a.click();
+          setTimeout(function(){ URL.revokeObjectURL(url); },10000);
+          cleanupVideo();
+          setBar(1);
+          setStatus('视频已生成并下载：newton-zoom.webm（'+W+'×'+H+'，'+VIDEO_FPS+'fps，'+VIDEO_DURATION+' 秒）');
+          requestRender();
+        };
+        rec.start();
+        setStatus('录制中… 0%');
+
+        var t0=performance.now();
+        function tick(){
+          if(!recording) return;
+          var t=(performance.now()-t0)/1000;
+          var fidx=Math.floor(t*VIDEO_FPS);
+          if(fidx>=totalFrames){ stopVideo(); return; }
+          var didx=-1;
+          for(var k=fidx;k>drawn;k--){ if(bitmaps[k]){ didx=k; break; } }
+          if(didx>=0){
+            cctx.drawImage(bitmaps[didx],0,0);
+            for(var k2=drawn+1;k2<=didx;k2++){ if(bitmaps[k2]){ bitmaps[k2].close(); bitmaps[k2]=null; } }
+            drawn=didx;
+          }
+          decodeAhead();
+          setBar((fidx+1)/totalFrames);
+          setStatus('录制中… '+Math.round((fidx+1)/totalFrames*100)+'%');
+          requestAnimationFrame(tick);
+        }
+        decodeAhead();
+        requestAnimationFrame(tick);
+      });
+    }
+  }
+
+  els.render.addEventListener('click',function(){ requestRender(); });
+
+  els.reset.addEventListener('click',function(){
+    if(recording) return;
+    view={ cx:0, cy:0, span:4 };
+    requestRender();
+  });
+
+  els.setstart.addEventListener('click',function(){
+    if(recording) return;
+    videoStart={ cx:view.cx, cy:view.cy, span:view.span };
+    updateRangeInfo();
+    setStatus('已记录起点视图（缩小端）');
+  });
+
+  els.setend.addEventListener('click',function(){
+    if(recording) return;
+    videoEnd={ cx:view.cx, cy:view.cy, span:view.span };
+    updateRangeInfo();
+    setStatus('已记录终点视图（放大端）');
+  });
+
+  els.download.addEventListener('click',function(){ downloadCanvas('newton-fractal.png'); });
+
+  els.highres.addEventListener('click',function(){
+    if(recording) return;
+    var z=res(), aspect=z.w/z.h, target=HIGHRES_LONG_SIDE, w, h;
+    if(aspect>=1){ w=target; h=Math.max(16,Math.round(target/aspect)); }
+    else{ h=target; w=Math.max(16,Math.round(target*aspect)); }
+    requestRender({ w:w, h:h, download:true, name:'newton-fractal-'+w+'x'+h+'.png' });
+  });
+
+  els.video.addEventListener('click',startVideo);
+
+  Array.prototype.forEach.call(document.querySelectorAll('.examples button'),function(btn){
+    btn.addEventListener('click',function(){
+      els.fexpr.value=btn.getAttribute('data-f');
+      els.dfexpr.value='';
+      requestRender();
+    });
+  });
+
+  function pixelToComplex(clientX,clientY){
+    var rect=els.canvas.getBoundingClientRect();
+    var fx=(clientX-rect.left)/rect.width, fy=(clientY-rect.top)/rect.height;
+    fx=Math.max(0,Math.min(1,fx)); fy=Math.max(0,Math.min(1,fy));
+    var r=ranges();
+    return { fx:fx, fy:fy, re:r.xmin+fx*r.xs, im:r.ymax-fy*r.ys };
+  }
+
+  els.canvas.addEventListener('wheel',function(e){
+    e.preventDefault();
+    if(recording) return;
+    var p=pixelToComplex(e.clientX,e.clientY);
+    var factor=Math.exp((e.deltaY>0?1:-1)*0.15);
+    var newSpan=Math.max(1e-12,Math.min(1e6,view.span*factor));
+    var r=res(), newYs=newSpan*(r.h/r.w);
+    view.cx=p.re + newSpan*(0.5 - p.fx);
+    view.cy=p.im + newYs*(p.fy - 0.5);
+    view.span=newSpan;
+    updateViewInfo();
+    if(wheelTimer) clearTimeout(wheelTimer);
+    wheelTimer=setTimeout(function(){ wheelTimer=null; requestRender(); },90);
+  },{passive:false});
+
+  els.canvas.addEventListener('mousedown',function(e){
+    if(e.button!==0 || recording) return;
+    var p=pixelToComplex(e.clientX,e.clientY);
+    view.cx=p.re; view.cy=p.im;
+    requestRender();
+  });
+
+  els.canvas.addEventListener('contextmenu',function(e){ e.preventDefault(); });
+
+  updateViewInfo();
+  updateRangeInfo();
+  var hrhint=document.getElementById('hrhint');
+  if(hrhint) hrhint.textContent+=' 多线程：使用 '+POOL_SIZE+' 个 Worker 并行计算。';
+})();
+</script>
+</body>
+</html>

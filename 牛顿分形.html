@@ -92,7 +92,7 @@
     <button id="video">生成视频</button>
     <div class="progress"><div id="bar"></div></div>
     <div class="mousehint" id="hrhint">高分辨率图片按当前视图生成（长边 8192 像素，约 6700 万像素）并自动下载，生成需数秒至数十秒，内存占用较高。</div>
-    <div class="mousehint">「生成视频」：先用鼠标把视图调到想要的起点，点「记录起点」；再缩放到想要的终点，点「记录终点」。跨度按指数收缩、中心按缩放比例同步聚焦到终点。<br>为保证流畅，采用「先离线渲染全部帧，再以 24fps 实时录制」两阶段：1024×1024、24fps、60 秒（共 1440 帧），渲染阶段耗时较长，输出 newton-zoom.webm；再次点击可随时中止。</div>
+    <div class="mousehint">「生成视频」：先用鼠标把视图调到想要的起点，点「记录起点」；再缩放到想要的终点，点「记录终点」。跨度按指数收缩、中心按缩放比例同步聚焦到终点。<br>为保证流畅，采用「先离线渲染全部帧，再以 24fps 实时录制」两阶段：1024×1024、24fps、60 秒（共 1440 帧），输出 newton-zoom.webm。<br>点「停止录制」不会丢弃进度：渲染阶段会立即用已渲染完成的帧生成一段（较短的）视频；录制阶段则保存当前已录部分。</div>
 
     <p class="hint">
       语法：+ − * / ^ ( )，变量 z，常量 pi e i，函数 sin cos tan exp log sqrt sinh cosh tanh asin acos atan abs arg re im conj。乘法可省略，如 2z、3sin(z)。<br>
@@ -502,7 +502,7 @@ self.onmessage=function(ev){
   var POOL_SIZE=Math.max(1,Math.min(navigator.hardwareConcurrency||4,16));
   var pool=[], blobUrl=null;
   var VIDEO_SIZE=1024, VIDEO_FPS=24, VIDEO_DURATION=60, VIDEO_MIN_SPAN=1e-12;
-  var videoPool=[], videoFrame=null, recording=false, rec=null;
+  var videoPool=[], videoFrame=null, recording=false, rec=null, videoPhase=null, videoCancel=false;
   var videoStart={ cx:0, cy:0, span:4 }, videoEnd={ cx:0, cy:0, span:1e-12 };
 
   function num(id,fallback){ var v=parseFloat(els[id].value); return isFinite(v)?v:fallback; }
@@ -702,10 +702,21 @@ self.onmessage=function(ev){
     killVideoPool();
     els.video.textContent='生成视频';
     setVideoControlsDisabled(false);
+    videoPhase=null;
+    videoCancel=false;
+    recording=false;
   }
   function stopVideo(){
-    recording=false;
-    if(rec && rec.state!=='inactive'){ rec.stop(); return; }
+    if(videoPhase==='play'){
+      recording=false;
+      if(rec && rec.state!=='inactive') rec.stop(); else cleanupVideo();
+      return;
+    }
+    if(videoPhase==='render'){
+      videoCancel=true;
+      setStatus('正在停止渲染，稍后用已完成的帧生成视频…');
+      return;
+    }
     cleanupVideo();
   }
   function startVideo(){
@@ -722,7 +733,7 @@ self.onmessage=function(ev){
     var tol=Math.max(1e-15,num('tol',1e-6));
     var totalFrames=Math.max(2,Math.round(VIDEO_DURATION*VIDEO_FPS));
 
-    recording=true; rec=null;
+    recording=true; rec=null; videoPhase='render'; videoCancel=false;
     els.video.textContent='停止录制';
     setVideoControlsDisabled(true);
     setBar(0);
@@ -748,7 +759,7 @@ self.onmessage=function(ev){
     var frames=new Array(totalFrames), idx=0;
     function renderNext(){
       if(!recording) return;
-      if(idx>=totalFrames){ startPlayback(); return; }
+      if(videoCancel || idx>=totalFrames){ startPlayback(); return; }
       var frac=idx/(totalFrames-1);
       renderFrame(paramsAt(frac), octx).then(function(){
         return new Promise(function(res,rej){
@@ -758,21 +769,26 @@ self.onmessage=function(ev){
         if(!recording) return;
         frames[idx]=blob; idx++;
         setBar(idx/totalFrames);
-        setStatus('离线渲染帧 '+idx+'/'+totalFrames+'（渲染完成后自动以 '+VIDEO_FPS+'fps 录制 '+VIDEO_DURATION+' 秒）');
+        setStatus('离线渲染帧 '+idx+'/'+totalFrames+'（渲染完成后自动以 '+VIDEO_FPS+'fps 录制，点“停止录制”可用已完成的帧提前生成）');
         setTimeout(renderNext,0);
-      }).catch(function(err){ setStatus('渲染出错：'+err.message); stopVideo(); });
+      }).catch(function(err){ setStatus('渲染出错：'+err.message); cleanupVideo(); });
     }
     renderNext();
 
     function startPlayback(){
       if(!recording) return;
+      var N=idx;
+      if(N<2){ cleanupVideo(); setStatus('已取消：可用帧太少，未生成视频'); return; }
+      videoPhase='play';
+      var partial=(N<totalFrames);
+      var duration=N/VIDEO_FPS;
       els.canvas.width=W; els.canvas.height=H;
       var cctx=els.canvas.getContext('2d');
       cctx.fillStyle='#000'; cctx.fillRect(0,0,W,H);
 
-      var bitmaps=new Array(totalFrames), drawn=-1, decodeIdx=-1, LOOK=8;
+      var bitmaps=new Array(N), drawn=-1, decodeIdx=-1, LOOK=8;
       function decodeAhead(){
-        while(decodeIdx+1<totalFrames && (decodeIdx-drawn)<LOOK){
+        while(decodeIdx+1<N && (decodeIdx-drawn)<LOOK){
           decodeIdx++;
           (function(k){
             createImageBitmap(frames[k]).then(function(b){
@@ -793,7 +809,7 @@ self.onmessage=function(ev){
         try{ rec=new MediaRecorder(stream, opts); }
         catch(err1){
           try{ rec=new MediaRecorder(stream); }
-          catch(err2){ setStatus('无法创建录制器：'+(err2.message||err1.message)); stopVideo(); return; }
+          catch(err2){ setStatus('无法创建录制器：'+(err2.message||err1.message)); cleanupVideo(); return; }
         }
         var chunks=[];
         rec.ondataavailable=function(ev){ if(ev.data && ev.data.size) chunks.push(ev.data); };
@@ -804,18 +820,18 @@ self.onmessage=function(ev){
           setTimeout(function(){ URL.revokeObjectURL(url); },10000);
           cleanupVideo();
           setBar(1);
-          setStatus('视频已生成并下载：newton-zoom.webm（'+W+'×'+H+'，'+VIDEO_FPS+'fps，'+VIDEO_DURATION+' 秒）');
+          setStatus('视频已生成并下载：newton-zoom.webm（'+W+'×'+H+'，'+VIDEO_FPS+'fps，'+duration.toFixed(1)+' 秒'+(partial?'，提前结束':'')+'）');
           requestRender();
         };
         rec.start();
-        setStatus('录制中… 0%');
+        setStatus('录制中… 0%'+(partial?'（使用已渲染的 '+N+' 帧）':''));
 
         var t0=performance.now();
         function tick(){
           if(!recording) return;
           var t=(performance.now()-t0)/1000;
           var fidx=Math.floor(t*VIDEO_FPS);
-          if(fidx>=totalFrames){ stopVideo(); return; }
+          if(fidx>=N){ stopVideo(); return; }
           var didx=-1;
           for(var k=fidx;k>drawn;k--){ if(bitmaps[k]){ didx=k; break; } }
           if(didx>=0){
@@ -824,8 +840,8 @@ self.onmessage=function(ev){
             drawn=didx;
           }
           decodeAhead();
-          setBar((fidx+1)/totalFrames);
-          setStatus('录制中… '+Math.round((fidx+1)/totalFrames*100)+'%');
+          setBar((fidx+1)/N);
+          setStatus('录制中… '+Math.round((fidx+1)/N*100)+'%'+(partial?'（提前结束片段）':''));
           requestAnimationFrame(tick);
         }
         decodeAhead();

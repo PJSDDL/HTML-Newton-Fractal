@@ -92,7 +92,7 @@
     <button id="video">生成视频</button>
     <div class="progress"><div id="bar"></div></div>
     <div class="mousehint" id="hrhint">高分辨率图片按当前视图生成（长边 8192 像素，约 6700 万像素）并自动下载，生成需数秒至数十秒，内存占用较高。</div>
-    <div class="mousehint">「生成视频」：先用鼠标把视图调到想要的起点，点「记录起点」；再缩放到想要的终点，点「记录终点」。跨度按指数收缩、中心按缩放比例同步聚焦到终点。<br>为保证流畅，采用「先离线渲染全部帧，再以 24fps 实时录制」两阶段：1024×1024、24fps、60 秒（共 1440 帧），输出 newton-zoom.webm。<br>点「停止录制」不会丢弃进度：渲染阶段会立即用已渲染完成的帧生成一段（较短的）视频；录制阶段则保存当前已录部分。</div>
+    <div class="mousehint">「生成视频」：先用鼠标把视图调到想要的起点，点「记录起点」；再缩放到想要的终点，点「记录终点」。跨度按指数收缩、中心按缩放比例同步聚焦到终点。<br>为保证流畅，采用「先离线渲染全部帧，再以 24fps 实时录制」两阶段：1024×1024、24fps、60 秒（共 1440 帧），优先输出 newton-zoom.mp4（不支持时回退为 webm）。<br>点「停止录制」不会丢弃进度：渲染阶段会立即用已渲染完成的帧生成一段（较短的）视频；录制阶段则保存当前已录部分。</div>
 
     <p class="hint">
       语法：+ − * / ^ ( )，变量 z，常量 pi e i，函数 sin cos tan exp log sqrt sinh cosh tanh asin acos atan abs arg re im conj。乘法可省略，如 2z、3sin(z)。<br>
@@ -502,7 +502,8 @@ self.onmessage=function(ev){
   var POOL_SIZE=Math.max(1,Math.min(navigator.hardwareConcurrency||4,16));
   var pool=[], blobUrl=null;
   var VIDEO_SIZE=1024, VIDEO_FPS=24, VIDEO_DURATION=60, VIDEO_MIN_SPAN=1e-12;
-  var videoPool=[], videoFrame=null, recording=false, rec=null, videoPhase=null, videoCancel=false;
+  var videoPool=[], videoFrame=null, recording=false, rec=null, videoPhase=null, videoCancel=false, videoLock=false;
+  var wakeLock=null, keepAliveCtx=null, mcChannel=null;
   var videoStart={ cx:0, cy:0, span:4 }, videoEnd={ cx:0, cy:0, span:1e-12 };
 
   function num(id,fallback){ var v=parseFloat(els[id].value); return isFinite(v)?v:fallback; }
@@ -623,7 +624,7 @@ self.onmessage=function(ev){
   function failJob(){ currentJob=null; busy=false; killPool(); }
 
   function requestRender(opts){
-    if(recording) return;
+    if(recording || videoLock) return;
     opts=opts||{};
     var f=els.fexpr.value.trim();
     if(!f){ setStatus('请先输入函数 f(z)'); return; }
@@ -650,17 +651,77 @@ self.onmessage=function(ev){
   }
 
   function pickMime(){
-    var list=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
-    for(var i=0;i<list.length;i++){
-      if(typeof MediaRecorder!=='undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(list[i])) return list[i];
+    var list=[
+      { mime:'video/mp4;codecs=avc1.640028', ext:'mp4' },
+      { mime:'video/mp4;codecs=avc1.42E01E', ext:'mp4' },
+      { mime:'video/mp4', ext:'mp4' },
+      { mime:'video/webm;codecs=vp9', ext:'webm' },
+      { mime:'video/webm;codecs=vp8', ext:'webm' },
+      { mime:'video/webm', ext:'webm' }
+    ];
+    if(typeof MediaRecorder!=='undefined' && MediaRecorder.isTypeSupported){
+      for(var i=0;i<list.length;i++){ if(MediaRecorder.isTypeSupported(list[i].mime)) return list[i]; }
     }
-    return '';
+    return { mime:'', ext:'webm' };
   }
   function videoSupported(){
     return typeof MediaRecorder!=='undefined' && !!els.canvas.captureStream;
   }
   function setVideoControlsDisabled(b){
     els.render.disabled=b; els.highres.disabled=b; els.download.disabled=b; els.reset.disabled=b;
+    els.setstart.disabled=b; els.setend.disabled=b;
+  }
+  function lockUI(b){
+    videoLock=b;
+    var ids=['render','highres','download','reset','video','setstart','setend'];
+    for(var i=0;i<ids.length;i++){ if(els[ids[i]]) els[ids[i]].disabled=b; }
+    var ex=document.querySelectorAll('.examples button');
+    for(var j=0;j<ex.length;j++) ex[j].disabled=b;
+    els.canvas.style.pointerEvents=b?'none':'';
+  }
+  function scheduleYield(fn){
+    if(typeof MessageChannel!=='undefined'){
+      if(!mcChannel) mcChannel=new MessageChannel();
+      mcChannel.port1.onmessage=fn;
+      mcChannel.port2.postMessage(0);
+    } else {
+      setTimeout(fn,0);
+    }
+  }
+  function requestWakeLock(){
+    try{
+      if(navigator.wakeLock && navigator.wakeLock.request && document.visibilityState==='visible'){
+        navigator.wakeLock.request('screen').then(function(wl){
+          wakeLock=wl;
+          wl.addEventListener('release',function(){ if(recording) requestWakeLock(); });
+        }).catch(function(){});
+      }
+    }catch(e){}
+  }
+  function releaseWakeLock(){
+    try{ if(wakeLock){ wakeLock.release(); } }catch(e){}
+    wakeLock=null;
+  }
+  function startKeepAlive(){
+    try{
+      var Ctx=window.AudioContext||window.webkitAudioContext;
+      if(!Ctx) return;
+      keepAliveCtx=new Ctx();
+      var osc=keepAliveCtx.createOscillator();
+      var gain=keepAliveCtx.createGain();
+      gain.gain.value=0.0001;
+      osc.frequency.value=440;
+      osc.connect(gain); gain.connect(keepAliveCtx.destination);
+      osc.start();
+      keepAliveCtx._osc=osc;
+      if(keepAliveCtx.state==='suspended' && keepAliveCtx.resume) keepAliveCtx.resume();
+    }catch(e){ keepAliveCtx=null; }
+  }
+  function stopKeepAlive(){
+    try{
+      if(keepAliveCtx){ if(keepAliveCtx._osc) keepAliveCtx._osc.stop(); keepAliveCtx.close(); }
+    }catch(e){}
+    keepAliveCtx=null;
   }
   function killVideoPool(){ for(var i=0;i<videoPool.length;i++) videoPool[i].terminate(); videoPool=[]; }
   function createVideoPool(n){
@@ -700,21 +761,27 @@ self.onmessage=function(ev){
   function cleanupVideo(){
     videoFrame=null;
     killVideoPool();
+    releaseWakeLock();
+    stopKeepAlive();
     els.video.textContent='生成视频';
     setVideoControlsDisabled(false);
+    lockUI(false);
     videoPhase=null;
     videoCancel=false;
     recording=false;
   }
   function stopVideo(){
+    lockUI(true);
+    els.video.textContent='生成中…';
     if(videoPhase==='play'){
       recording=false;
-      if(rec && rec.state!=='inactive') rec.stop(); else cleanupVideo();
+      if(rec && rec.state!=='inactive'){ setStatus('正在完成视频生成，请勿关闭页面…'); rec.stop(); }
+      else cleanupVideo();
       return;
     }
     if(videoPhase==='render'){
       videoCancel=true;
-      setStatus('正在停止渲染，稍后用已完成的帧生成视频…');
+      setStatus('正在用已完成的帧生成视频，请勿关闭页面…');
       return;
     }
     cleanupVideo();
@@ -734,6 +801,8 @@ self.onmessage=function(ev){
     var totalFrames=Math.max(2,Math.round(VIDEO_DURATION*VIDEO_FPS));
 
     recording=true; rec=null; videoPhase='render'; videoCancel=false;
+    requestWakeLock();
+    startKeepAlive();
     els.video.textContent='停止录制';
     setVideoControlsDisabled(true);
     setBar(0);
@@ -770,7 +839,7 @@ self.onmessage=function(ev){
         frames[idx]=blob; idx++;
         setBar(idx/totalFrames);
         setStatus('离线渲染帧 '+idx+'/'+totalFrames+'（渲染完成后自动以 '+VIDEO_FPS+'fps 录制，点“停止录制”可用已完成的帧提前生成）');
-        setTimeout(renderNext,0);
+        scheduleYield(renderNext);
       }).catch(function(err){ setStatus('渲染出错：'+err.message); cleanupVideo(); });
     }
     renderNext();
@@ -803,24 +872,27 @@ self.onmessage=function(ev){
         bitmaps[0]=b0; cctx.drawImage(b0,0,0); drawn=0;
 
         var stream=els.canvas.captureStream(VIDEO_FPS);
+        var pick=pickMime();
         var opts={ videoBitsPerSecond:12000000 };
-        var mime=pickMime();
-        if(mime) opts.mimeType=mime;
+        if(pick.mime) opts.mimeType=pick.mime;
         try{ rec=new MediaRecorder(stream, opts); }
         catch(err1){
-          try{ rec=new MediaRecorder(stream); }
+          try{ rec=new MediaRecorder(stream); pick={ mime:'', ext:'webm' }; }
           catch(err2){ setStatus('无法创建录制器：'+(err2.message||err1.message)); cleanupVideo(); return; }
         }
+        var fileName='newton-zoom.'+pick.ext;
         var chunks=[];
         rec.ondataavailable=function(ev){ if(ev.data && ev.data.size) chunks.push(ev.data); };
+        rec.onerror=function(ev){ setStatus('录制出错：'+((ev&&ev.error&&ev.error.name)||'未知错误')); cleanupVideo(); };
         rec.onstop=function(){
-          var blob=new Blob(chunks,{type:'video/webm'});
+          var blob=new Blob(chunks,{type:pick.mime||'video/webm'});
+          if(!blob || blob.size===0){ cleanupVideo(); setBar(0); setStatus('视频生成失败：录制数据为空，请重试。'); return; }
           var url=URL.createObjectURL(blob);
-          var a=document.createElement('a'); a.download='newton-zoom.webm'; a.href=url; a.click();
+          var a=document.createElement('a'); a.download=fileName; a.href=url; a.click();
           setTimeout(function(){ URL.revokeObjectURL(url); },10000);
           cleanupVideo();
           setBar(1);
-          setStatus('视频已生成并下载：newton-zoom.webm（'+W+'×'+H+'，'+VIDEO_FPS+'fps，'+duration.toFixed(1)+' 秒'+(partial?'，提前结束':'')+'）');
+          setStatus('视频已生成并下载：'+fileName+'（'+W+'×'+H+'，'+VIDEO_FPS+'fps，'+duration.toFixed(1)+' 秒'+(partial?'，提前结束':'')+'）');
           requestRender();
         };
         rec.start();
@@ -842,10 +914,10 @@ self.onmessage=function(ev){
           decodeAhead();
           setBar((fidx+1)/N);
           setStatus('录制中… '+Math.round((fidx+1)/N*100)+'%'+(partial?'（提前结束片段）':''));
-          requestAnimationFrame(tick);
+          (document.hidden?scheduleYield:requestAnimationFrame)(tick);
         }
         decodeAhead();
-        requestAnimationFrame(tick);
+        (document.hidden?scheduleYield:requestAnimationFrame)(tick);
       });
     }
   }
@@ -853,20 +925,20 @@ self.onmessage=function(ev){
   els.render.addEventListener('click',function(){ requestRender(); });
 
   els.reset.addEventListener('click',function(){
-    if(recording) return;
+    if(recording || videoLock) return;
     view={ cx:0, cy:0, span:4 };
     requestRender();
   });
 
   els.setstart.addEventListener('click',function(){
-    if(recording) return;
+    if(recording || videoLock) return;
     videoStart={ cx:view.cx, cy:view.cy, span:view.span };
     updateRangeInfo();
     setStatus('已记录起点视图（缩小端）');
   });
 
   els.setend.addEventListener('click',function(){
-    if(recording) return;
+    if(recording || videoLock) return;
     videoEnd={ cx:view.cx, cy:view.cy, span:view.span };
     updateRangeInfo();
     setStatus('已记录终点视图（放大端）');
@@ -902,7 +974,7 @@ self.onmessage=function(ev){
 
   els.canvas.addEventListener('wheel',function(e){
     e.preventDefault();
-    if(recording) return;
+    if(recording || videoLock) return;
     var p=pixelToComplex(e.clientX,e.clientY);
     var factor=Math.exp((e.deltaY>0?1:-1)*0.15);
     var newSpan=Math.max(1e-12,Math.min(1e6,view.span*factor));
@@ -916,13 +988,19 @@ self.onmessage=function(ev){
   },{passive:false});
 
   els.canvas.addEventListener('mousedown',function(e){
-    if(e.button!==0 || recording) return;
+    if(e.button!==0 || recording || videoLock) return;
     var p=pixelToComplex(e.clientX,e.clientY);
     view.cx=p.re; view.cy=p.im;
     requestRender();
   });
 
   els.canvas.addEventListener('contextmenu',function(e){ e.preventDefault(); });
+
+  document.addEventListener('visibilitychange',function(){
+    if(!recording) return;
+    if(document.visibilityState==='visible'){ requestWakeLock(); setStatus('已回到前台，继续生成视频…'); }
+    else { requestWakeLock(); setStatus('页面在后台，已启用防熄屏与免限流调度，仍会继续生成（建议保持屏幕点亮）…'); }
+  });
 
   updateViewInfo();
   updateRangeInfo();
